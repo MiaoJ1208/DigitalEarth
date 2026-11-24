@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
 from uuid import UUID
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from minio.error import S3Error
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -25,7 +25,7 @@ class TrackRequest(BaseModel):
 
 class ModelResolveRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    norad_ids: list[int] = Field(min_length=1, max_length=MAX_SELECTED)
+    norad_ids: list[int] = Field(min_length=1)
 
     @model_validator(mode="after")
     def valid_ids(self):
@@ -122,8 +122,18 @@ def submit(body: TrackRequest, request: Request):
     except (ValueError, BusyError) as exc:
         raise HTTPException(503, str(exc)) from exc
     result = job_description(row)
-    result.update(cache_hit=not created and row["status"] == "succeeded")
+    result.update(preview_supported=True, cache_hit=not created and row["status"] == "succeeded")
     return JSONResponse(result, status_code=200 if row["status"] == "succeeded" else 202)
+
+@app.get(PREFIX + "/jobs/{job_id}/preview")
+def preview(job_id: UUID, request: Request, cursor: int = Query(0, ge=0)):
+    done, item = request.app.state.service.preview_batch(str(job_id), cursor)
+    headers = {"Cache-Control": "no-store"}
+    if item is None:
+        return Response(status_code=204 if done else 202, headers=headers)
+    norad, epoch, duration, digest, raw = item
+    headers.update({"X-Norad": str(norad), "X-Epoch": str(epoch), "X-Duration": str(duration), "X-Digest": digest})
+    return Response(content=raw, media_type="application/octet-stream", headers=headers)
 
 @app.get(PREFIX + "/jobs/{job_id}")
 def job(job_id: UUID, request: Request):
@@ -134,7 +144,13 @@ def job(job_id: UUID, request: Request):
 
 @app.get(PREFIX + "/tracks")
 def results(request: Request):
-    return dict(results=request.app.state.service.store.list_results())
+    rows = request.app.state.service.store.list_results()
+    for row in rows:
+        for satellite in (row["manifest"] or {}).get("satellites", []):
+            # History only displays summary metadata. Loading an entry fetches its full manifest.
+            satellite.pop("overview", None)
+            satellite.pop("blocks", None)
+    return dict(results=rows)
 
 @app.get(PREFIX + "/tracks/{result_id}")
 def manifest(result_id: UUID, request: Request):
@@ -155,6 +171,11 @@ def download(result_id: UUID, request: Request):
     headers = {"ETag": etag, "Cache-Control": "private, max-age=31536000, immutable"}
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=304, headers=headers)
+    if not row["object_key"]:
+        tracks = [dict(satellite_id=spec["satellite_id"], samples=store.read_track(row, spec))
+                  for spec in row["manifest"]["satellites"]]
+        return JSONResponse(dict(schema_version="satellite-samples-1", result_id=str(result_id),
+                                 satellites=tracks), headers=headers)
     try:
         source = store.objects.get_object(store.settings.bucket, row["object_key"])
     except S3Error as exc:
@@ -167,3 +188,51 @@ def download(result_id: UUID, request: Request):
             source.release_conn()
     headers["Content-Length"] = str(row["manifest"]["byte_length"])
     return StreamingResponse(chunks(), media_type="application/json", headers=headers)
+
+@app.get(PREFIX + "/tracks/{result_id}/binary/{norad_id}")
+def binary_track(result_id: UUID, norad_id: int, request: Request):
+    import json
+    from orbit_codec import encode
+    store = request.app.state.service.store
+    row = store.get(str(result_id))
+    if not row or row["status"] != "succeeded" or norad_id not in row["request"]["norad_ids"]:
+        raise HTTPException(404, "轨迹不存在")
+    spec = next(s for s in row["manifest"]["satellites"] if s["norad_id"] == norad_id)
+    return Response(encode(store.read_track(row, spec), row["manifest"]["output_step_s"]),
+                    media_type="application/octet-stream",
+                    headers={"Cache-Control": "private, max-age=31536000, immutable"})
+
+@app.get(PREFIX + "/blocks/{norad_id}/{digest}")
+def orbit_block(norad_id: int, digest: str, request: Request):
+    import re
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise HTTPException(404)
+    try:
+        raw = request.app.state.service.store.read_bytes(f"orbit-blocks/{norad_id}/{digest}.orb")
+    except S3Error as exc:
+        if exc.code == "NoSuchKey":
+            raise HTTPException(404) from exc
+        raise
+    return Response(raw, media_type="application/octet-stream",
+                    headers={"Cache-Control":"private, max-age=31536000, immutable"})
+
+@app.get(PREFIX + "/packs/{norad_id}/{digest}")
+def orbit_pack(norad_id: int, digest: str, request: Request,
+               offset: int = Query(0, ge=0), length: int | None = Query(None, ge=1)):
+    import re
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise HTTPException(404)
+    if offset and length is None:
+        raise HTTPException(422, "指定偏移时须提供长度")
+    try:
+        raw = request.app.state.service.store.read_bytes(f"orbit-packs/{norad_id}/{digest}.orb", offset, length or 0)
+    except S3Error as exc:
+        if exc.code == "NoSuchKey":
+            raise HTTPException(404) from exc
+        if exc.code == "InvalidRange":
+            raise HTTPException(416) from exc
+        raise
+    if length is not None and len(raw) != length:
+        raise HTTPException(416)
+    return Response(raw, media_type="application/octet-stream",
+                    headers={"Cache-Control": "private, max-age=31536000, immutable"})

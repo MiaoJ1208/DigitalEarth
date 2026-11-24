@@ -53,12 +53,12 @@ with sync_playwright() as playwright:
     def checkbox(norad):
         return page.locator(".satellite-choice").filter(has_text=f"NORAD {norad}").locator("input")
     expect(page.locator(".satellite-choice input:checked")).to_have_count(3)
-    expect(page.locator(".satellite-choice input:disabled")).to_have_count(7)
-    expect(checkbox(54234)).to_be_disabled()
+    expect(page.locator(".satellite-choice input:disabled")).to_have_count(0)
+    expect(checkbox(54234)).to_be_enabled()
     checkbox(48274).uncheck()
     expect(checkbox(54234)).to_be_enabled()
     checkbox(54234).check()
-    expect(checkbox(48274)).to_be_disabled()
+    expect(checkbox(48274)).to_be_enabled()
     search = page.get_by_role("searchbox", name="搜索卫星")
     search.fill("48808")
     expect(page.locator(".satellite-choice")).to_have_count(1)
@@ -66,13 +66,13 @@ with sync_playwright() as playwright:
     search.fill("")
     page.get_by_label("卫星分类", exact=True).select_option("navigation")
     expect(page.locator(".satellite-choice")).to_have_count(3)
-    page.get_by_role("button", name="清空卫星选择", exact=True).click()
+    page.get_by_role("button", name="清空选择和轨迹", exact=True).click()
     for norad in (36585,37846,43001):
         checkbox(norad).check()
     expect(page.locator(".satellite-choice input:checked")).to_have_count(3)
     page.get_by_label("卫星分类", exact=True).select_option("")
-    expect(page.locator(".satellite-choice input:disabled")).to_have_count(7)
-    page.get_by_role("button", name="清空卫星选择", exact=True).click()
+    expect(page.locator(".satellite-choice input:disabled")).to_have_count(0)
+    page.get_by_role("button", name="清空选择和轨迹", exact=True).click()
     for norad in (25544,20580,54234):
         checkbox(norad).check()
     catalog_list = page.get_by_role("group", name="可选卫星列表", exact=True)
@@ -85,8 +85,20 @@ with sync_playwright() as playwright:
       const moduleUrl = performance.getEntriesByType('resource')
         .find(e => new URL(e.name).pathname === '/src/features/globe/SceneController.ts').name;
       const { SceneController } = await import(moduleUrl);
+      const playbackUrl = performance.getEntriesByType('resource')
+        .find(e => new URL(e.name).pathname === '/src/features/satellites/SatellitePlayback.ts').name;
+      const { SatellitePlayback } = await import(playbackUrl);
+      const points = new WeakMap();
+      const makeLine = SatellitePlayback.prototype.makeLine;
+      SatellitePlayback.prototype.makeLine = function(id, positions, color) {
+        const line = makeLine.call(this, id, positions, color);
+        points.set(line, positions);
+        return line;
+      };
+      window.__testOrbitPoints = () => window.__testPlayback.lines.flatMap(line => points.get(line) ?? []);
       const load = SceneController.prototype.loadSatellites;
       SceneController.prototype.loadSatellites = function(...args) {
+        window.__testPlayback = this.satellitePlayback;
         window.__testViewer = this.viewer;
         window.__testManifest = args[0];
         window.__testSamples = args[1];
@@ -252,11 +264,11 @@ with sync_playwright() as playwright:
     page.unroute(failure_route)
     # Each orbital scale must be framed automatically, without a manual zoom-out.
     for label, ids, duration, step, target in (
-        ("meo", [36585,37846,43001],86400,30,36585),
+        ("meo", [36585,37846,43001],86400,10,36585),
         ("geo", [48808],7200,10,48808),
         ("mixed", [25544,36585],86400,10,36585),
     ):
-        page.get_by_role("button", name="清空卫星选择", exact=True).click()
+        page.get_by_role("button", name="清空选择和轨迹", exact=True).click()
         for norad in ids:
             checkbox(norad).check()
         load.click()
@@ -266,12 +278,11 @@ with sync_playwright() as playwright:
         framing = page.evaluate("""() => {
           const v = window.__testViewer;
           let outside = 0;
-          for (const e of v.dataSources.getByName('public-satellites')[0].entities.values) {
-            if (!e.polyline) continue;
-            for (const p of e.polyline.positions.getValue(v.clock.currentTime)) {
-              const s = v.scene.cartesianToCanvasCoordinates(p);
-              if (!s || s.x<0 || s.y<0 || s.x>v.scene.canvas.clientWidth || s.y>v.scene.canvas.clientHeight) outside++;
-            }
+          const points = window.__testOrbitPoints();
+          if (!points.length) throw Error('Missing static orbit geometry');
+          for (const p of points) {
+            const s = v.scene.cartesianToCanvasCoordinates(p);
+            if (!s || s.x<0 || s.y<0 || s.x>v.scene.canvas.clientWidth || s.y>v.scene.canvas.clientHeight) outside++;
           }
           return {outside, height:v.camera.positionCartographic.height,
             duration:window.__testManifest.duration_s,step:window.__testManifest.output_step_s};
@@ -296,10 +307,11 @@ with sync_playwright() as playwright:
         assert_overview(tracking_snapshot(page), f"norad-{target}", tracked_zoom["distance"])
         page.get_by_role("button", name="查看全部轨迹", exact=True).click()
         page.wait_for_timeout(1000)
-    # Restoring a persisted result after a full page reload reconstructs the same scene.
+    # After reload, tracks are loaded directly from the current selection.
     page.reload(wait_until="domcontentloaded")
-    expect(page.locator(".satellite-history button").first).to_be_visible(timeout=60000)
-    page.locator(".satellite-history button").first.click()
+    expect(load).to_be_enabled(timeout=60000)
+    expect(page.get_by_role("heading", name="已保存轨迹")).to_have_count(0)
+    load.click()
     expect(toggle).to_be_enabled(timeout=30000)
     expect(controls).to_have_count(0)
     toggle.click()
@@ -307,7 +319,7 @@ with sync_playwright() as playwright:
     restored_count = page.get_by_label("跟随卫星", exact=True).locator("option").count() - 1
     assert 1 <= restored_count <= 3
     expect(load).to_be_enabled()
-    expect(page.locator(".satellite-message").filter(has_text="已加载保存的轨迹")).to_be_visible()
+    expect(page.locator(".satellite-message").filter(has_text="轨迹")).to_be_visible()
     expect(page.locator(".scene-status")).to_have_text("场景就绪", timeout=60000)
     page.set_viewport_size({"width":1000,"height":760})
     page.wait_for_timeout(2500)
@@ -328,7 +340,7 @@ with sync_playwright() as playwright:
     expect(controls).to_have_count(0)
     expect(page.locator(".satellite-position")).to_have_count(restored_count)
     assert not errors, errors
-    page.get_by_role("button",name="卸载轨迹",exact=True).click()
+    page.get_by_role("button",name="清空选择和轨迹",exact=True).click()
     expect(page.get_by_role("region",name="卫星轨迹回放",exact=True)).to_have_count(0)
     expect(toggle).to_be_disabled()
     expect(page.locator(".cesium-widget canvas")).to_have_count(1)

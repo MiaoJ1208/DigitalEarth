@@ -35,7 +35,7 @@ def load_configuration():
 CATALOG, CATEGORIES = load_configuration()
 SPECIFICATIONS = {entry["norad_id"]: entry for entry in CATALOG}
 SATELLITES = {entry["norad_id"]: entry["display_name"] for entry in CATALOG}
-MAX_SELECTED = 3
+MAX_SELECTED = len(SATELLITES)
 FIELDS = ("MEAN_MOTION", "ECCENTRICITY", "INCLINATION", "RA_OF_ASC_NODE",
           "ARG_OF_PERICENTER", "MEAN_ANOMALY", "BSTAR", "MEAN_MOTION_DOT", "MEAN_MOTION_DDOT")
 logger = logging.getLogger(__name__)

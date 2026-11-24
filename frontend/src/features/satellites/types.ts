@@ -1,3 +1,4 @@
+import type { FixedOrbit } from './fixedOrbit';
 export const satellitePlaybackSpeeds = [1, 30, 60, 120, 300, 600, 1200, 3600] as const;
 
 export interface SatelliteEntry {
@@ -25,6 +26,12 @@ export interface TrackSatellite {
   display_name: string;
   object_name: string;
   sample_count: number;
+  pack_key?: string;
+  format?: "ORF1";
+  source_epoch?: number;
+  display_step_s?: number;
+  blocks?: Array<{ key?: string; offset?: number; length?: number; start: number; count: number }>;
+  overview?: number[];
   period_s: number;
   element_epoch_utc: string;
   fetched_at: string;
@@ -69,6 +76,7 @@ export interface SatelliteModelResolution {
   models: SatelliteModel[];
 }
 export interface SatelliteJob {
+  preview_supported?: boolean;
   job_id: string;
   result_id: string;
   status: 'queued' | 'running' | 'succeeded' | 'failed';
@@ -76,19 +84,23 @@ export interface SatelliteJob {
   result_url: string;
   cache_hit?: boolean;
 }
-export interface SavedTrack {
-  result_id: string;
-  status: string;
-  manifest: SatelliteManifest | null;
-  created_at: string;
-}
 export interface SatellitePlaybackState {
   manifest: SatelliteManifest;
   models: SatelliteModel[];
   elapsed: number;
   currentUtc: string;
+  loadError?: string;
   playing: boolean;
   speed: number;
   following: string | null;
   positions: Array<{ satellite_id: string; longitude: number; latitude: number; height: number }>;
 }
+
+export interface OrbitChunk {
+  fixed?: FixedOrbit;
+  satellite: TrackSatellite;
+  first: number;
+  xyz: Float64Array;
+  nextWindow?: (seconds: number, ahead: number, signal: AbortSignal) => Promise<OrbitChunk> | undefined;
+}
+export type ReceiveChunk = (manifest: SatelliteManifest, chunk: OrbitChunk, models: SatelliteModel[]) => number | void;

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { loadSavedTrack, loadSelectedTrack, readCatalog, readHistory } from './api';
-import type { SavedTrack, SatelliteCatalog, SatelliteManifest, SatelliteModel, SatellitePlaybackState, SatelliteSamples } from './types';
+import { loadSelectedTrack, readCatalog } from './api';
+import type { SatelliteCatalog, SatellitePlaybackState, ReceiveChunk } from './types';
 
 export function satelliteTime(value: string) {
   return `${value.replace('T', ' ').slice(0, 19)} UTC`;
@@ -17,23 +17,23 @@ interface Props {
   active: boolean;
   playback: SatellitePlaybackState | null;
   ready: boolean;
-  onLoad: (manifest: SatelliteManifest, samples: SatelliteSamples, models: SatelliteModel[]) => void;
+  onPreview: (norad: number, xyz: number[]) => () => void;
+  onLoad: ReceiveChunk;
   onFocus: () => void;
   onClear: () => void;
 }
 
-export function SatellitePanel({ active, playback, ready, onLoad, onFocus, onClear }: Props) {
+export function SatellitePanel({ active, playback, ready, onPreview, onLoad, onFocus, onClear }: Props) {
   const [catalog, setCatalog] = useState<SatelliteCatalog | null>(null);
   const [selected, setSelected] = useState<number[]>([25544, 48274, 20580]);
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('');
-  const [history, setHistory] = useState<SavedTrack[]>([]);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState<string | null>(null);
   const operation = useRef<AbortController | null>(null);
   const catalogLoaded = useRef(false);
-  const limit = catalog?.max_selected ?? 3;
+  const limit = catalog?.max_selected ?? 0;
   const categories = [...new Map(catalog?.satellites.map(sat => [sat.category, sat.category_name])).entries()];
   const query = search.trim().toLocaleLowerCase();
   const visible = catalog?.satellites.filter(sat => (!category || sat.category === category) &&
@@ -53,36 +53,36 @@ export function SatellitePanel({ active, playback, ready, onLoad, onFocus, onCle
     const controller = new AbortController();
     operation.current = controller;
     setBusy(true);
-    Promise.all([readCatalog(controller.signal), readHistory(controller.signal)])
-      .then(([value, rows]) => { if (!controller.signal.aborted) { applyCatalog(value); setHistory(rows); } })
+    readCatalog(controller.signal)
+      .then(value => { if (!controller.signal.aborted) applyCatalog(value); })
       .catch(err => { if (!controller.signal.aborted) setError(err.message); })
       .finally(() => { if (!controller.signal.aborted) setBusy(false); });
     return () => controller.abort();
   }, [active]);
 
-  async function act(action: 'load' | 'refresh' | string) {
+  async function act(action: 'load' | 'refresh') {
     operation.current?.abort();
     const controller = new AbortController();
     operation.current = controller;
     setBusy(true);
     setError(null);
+    const previews = new Map<number, () => void>();
+    const clearPreviews = () => { for (const remove of previews.values()) remove(); previews.clear(); };
+    controller.signal.addEventListener('abort', clearPreviews, {once: true});
     try {
       if (action === 'refresh') {
         const value = await readCatalog(controller.signal, true);
         applyCatalog(value);
         setMessage('卫星数据已读取。');
       } else {
-        setMessage(action === 'load' ? '正在加载轨迹…' : '正在读取已保存轨迹…');
-        const data = action === 'load'
-          ? await loadSelectedTrack(selected, controller.signal)
-          : await loadSavedTrack(action, controller.signal);
+        setMessage('正在加载轨迹…');
+        const data = await loadSelectedTrack(selected, controller.signal, onLoad, (norad, xyz) => {
+          if (!controller.signal.aborted && !previews.has(norad)) previews.set(norad, onPreview(norad, xyz));
+        });
         if (controller.signal.aborted) return;
-        onLoad(data.manifest, data.samples, data.models);
         setSelected(data.manifest.satellites.map(sat => sat.norad_id)
           .filter(id => catalog?.satellites.some(sat => sat.norad_id === id)).slice(0, limit));
-        setMessage(action !== 'load' ? '已加载保存的轨迹。'
-          : 'reused' in data && data.reused ? '已复用保存的轨迹成果。' : '轨迹已生成并保存。');
-        setHistory(await readHistory(controller.signal));
+        setMessage(data.reused ? '已复用缓存轨迹。' : '轨迹已加载。');
       }
     } catch (err) {
       if (!controller.signal.aborted) {
@@ -90,8 +90,19 @@ export function SatellitePanel({ active, playback, ready, onLoad, onFocus, onCle
         setError(err instanceof Error ? err.message : '卫星数据加载失败。');
       }
     } finally {
+      clearPreviews();
+      controller.signal.removeEventListener('abort', clearPreviews);
       if (!controller.signal.aborted) setBusy(false);
     }
+  }
+
+  function clearScene() {
+    operation.current?.abort();
+    setBusy(false);
+    setError(null);
+    setMessage('');
+    setSelected([]);
+    onClear();
   }
 
   return <div className="satellite-panel-content">
@@ -104,7 +115,7 @@ export function SatellitePanel({ active, playback, ready, onLoad, onFocus, onCle
     </div>
     <div className="satellite-selection-status">
       <span role="status">已选 {selected.length} / {limit}<span> · 共 {catalog?.satellites.length ?? 0} 颗</span></span>
-      <button className="text-button" aria-label="清空卫星选择" disabled={busy || !selected.length} onClick={() => setSelected([])}>清空</button>
+      <button className="text-button" aria-label="清空选择和轨迹" disabled={(!catalog && busy) || (!selected.length && !playback && !busy)} onClick={clearScene}>清空选择和轨迹</button>
     </div>
     <div className="satellite-list" role="group" aria-label="可选卫星列表" tabIndex={0}>
     {visible.map(sat => {
@@ -127,14 +138,14 @@ export function SatellitePanel({ active, playback, ready, onLoad, onFocus, onCle
     <button className="primary-button satellite-load" disabled={busy || !ready || !catalog || !selected.length || selected.length > limit}
       onClick={() => void act('load')}>{busy ? '正在加载…' : '加载所选卫星轨迹'}</button>
     {message && <p className="satellite-message" role="status">{message}</p>}
-    {error && <p className="satellite-error" role="alert">{error}</p>}
+    {(error || playback?.loadError) && <p className="satellite-error" role="alert">{error || playback?.loadError}</p>}
     {playback && <>
       <div className="satellite-result-info">
         <p>回放起点：{satelliteTime(playback.manifest.epoch_utc)}</p>
         <p>回放时长：{playback.manifest.duration_s / 3600} 小时</p>
         {playback.manifest.window_kind === 'historical' && <p>当前使用较旧要素对应的历史时段。</p>}
       </div>
-      <div className="satellite-actions"><button className="text-button" onClick={onFocus}>查看全部轨迹</button><button className="text-button" onClick={onClear}>卸载轨迹</button></div>
+      <div className="satellite-actions"><button className="text-button" onClick={onFocus}>查看全部轨迹</button></div>
       <details className="satellite-provenance"><summary>数据获取时间与来源</summary>
         {playback.manifest.satellites.map(sat => <p key={sat.satellite_id}>{sourceLink(sat.source_url, sat.object_name)}<br />要素：{satelliteTime(sat.element_epoch_utc)}<br />获取：{satelliteTime(sat.fetched_at)}</p>)}
         {modelSources.map(model => <div key={model.version_id}>
@@ -145,11 +156,5 @@ export function SatellitePanel({ active, playback, ready, onLoad, onFocus, onCle
         </div>)}
       </details>
     </>}
-    <div className="panel-divider" />
-    <h3 className="section-title">已保存轨迹</h3>
-    {!history.length && <p className="satellite-message">加载成功后自动保存，刷新页面仍可读取。</p>}
-    <div className="satellite-history" role="group" aria-label="已保存轨迹列表" tabIndex={0}>{history.map(row => <button key={row.result_id} type="button" disabled={busy || !ready}
-      onClick={() => void act(row.result_id)}><strong>{row.manifest!.satellites.map(sat => sat.object_name).join(' / ')}</strong>
-      <small>{satelliteTime(row.manifest!.epoch_utc)} · {row.result_id.slice(0, 8)}</small></button>)}</div>
   </div>;
 }

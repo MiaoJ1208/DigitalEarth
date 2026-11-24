@@ -113,7 +113,7 @@ class PipelineTests(unittest.TestCase):
             catalog = client.get("/api/v1/satellites/catalog").json()
             self.assertEqual({sat["norad_id"] for sat in catalog["satellites"]},
                              {25544,48274,20580,25994,49260,54234,36585,37846,43001,48808})
-            self.assertEqual(catalog["max_selected"], 3)
+            self.assertEqual(catalog["max_selected"], len(SATELLITES))
             self.assertTrue(all(sat["source_url"].startswith("https://celestrak.org/") for sat in catalog["satellites"]))
             response = client.post("/api/v1/satellites/tracks", json=body)
             self.assertIn(response.status_code, (200,202))
@@ -138,7 +138,7 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(client.get("/api/v1/satellites/health").json()["native_calls"], count)
             self.assertEqual(client.post("/api/v1/satellites/tracks", json={**body,"altitude_km":550}).status_code, 422)
             self.assertEqual(client.post("/api/v1/satellites/tracks", json={"norad_ids":[123]}).status_code, 422)
-            for ids in ([25544,48274,20580,25994], [25544,25544], [43013]):
+            for ids in ([25544,25544], [43013]):
                 self.assertEqual(client.post("/api/v1/satellites/tracks", json={"norad_ids":ids}).status_code, 422)
             changed = client.app.state.service.prepare([25544,20580])
             key = client.app.state.service.cache_key(changed)
@@ -153,8 +153,8 @@ class PipelineTests(unittest.TestCase):
 
     def test_navigation_and_geostationary_full_tracks(self):
         with TestClient(app) as client:
-            cases = [([36585,37846,43001],86400,30), ([48808,25994,49260],7200,10),
-                     ([25544,36585],86400,10), ([48808,37846],86400,30)]
+            cases = [([36585,37846,43001],86400,10), ([48808,25994,49260],7200,10),
+                     ([25544,36585],86400,10), ([48808,37846],86400,10)]
             for ids, duration, step in cases:
                 job = client.post("/api/v1/satellites/tracks", json={"norad_ids":ids}).json()
                 deadline = time.monotonic() + 20
@@ -168,6 +168,7 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual({sat["norad_id"] for sat in manifest["satellites"]}, set(ids))
                 self.assertEqual(manifest["duration_s"], duration)
                 self.assertEqual(manifest["output_step_s"], step)
+                self.assertTrue(all(s["display_step_s"] == step for s in manifest["satellites"]))
                 self.assertEqual((utc(manifest["stop_utc"])-utc(manifest["epoch_utc"])).total_seconds(), duration)
                 self.assertTrue(all(len(track["samples"]) == duration//step+1 for track in data["satellites"]))
                 self.assertTrue(all(track["samples"][-1][0] == duration for track in data["satellites"]))

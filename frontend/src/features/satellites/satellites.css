@@ -5,7 +5,7 @@
 .satellite-selection-status { display: flex; justify-content: space-between; align-items: center; min-height: 36px; font-size: 12px; }
 .satellite-selection-status > span > span { opacity: .7; }
 .satellite-list { height: clamp(140px, calc(100vh - 560px), 340px); overflow-y: scroll; overscroll-behavior: contain; scrollbar-gutter: stable; scrollbar-width: auto; scrollbar-color: auto; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
-.satellite-list:focus-visible, .satellite-history:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.satellite-list:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 .timeline-expanded .satellite-list { height: clamp(100px, calc(100vh - 650px), 260px); }
 .timeline-expanded .main-panel.satellites-panel { max-height: calc(100% - 240px); }
 .satellite-choice { display: flex; align-items: flex-start; gap: 10px; padding: 11px 5px 11px 0; border-bottom: 1px solid var(--line); cursor: pointer; }
@@ -25,15 +25,10 @@
 .satellite-provenance summary { cursor: pointer; }
 .satellite-provenance a { text-decoration: underline; text-underline-offset: 3px; }
 .satellite-provenance p { overflow-wrap: anywhere; }
-.satellite-history { display: grid; gap: 8px; max-height: 210px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: auto; scrollbar-color: auto; }
-.satellite-list::-webkit-scrollbar, .satellite-history::-webkit-scrollbar { width: 8px; }
-.satellite-list::-webkit-scrollbar-track, .satellite-history::-webkit-scrollbar-track { background: var(--background); }
-.satellite-list::-webkit-scrollbar-thumb, .satellite-history::-webkit-scrollbar-thumb { min-height: 24px; border-radius: 4px; background: #527dad; border: 1px solid var(--background); }
-.satellite-list::-webkit-scrollbar-thumb:hover, .satellite-history::-webkit-scrollbar-thumb:hover { background: #80c1ff; }
-.satellite-history button { text-align: left; background: var(--background); border: 1px solid var(--line); padding: 10px; border-radius: 4px; }
-.satellite-history button:hover { background: var(--hover); }
-.satellite-history strong { font-size: 12px; line-height: 1.6; font-weight: 500; display: block; overflow-wrap: anywhere; }
-.satellite-history small { display: block; font: 11px/1.8 Consolas, monospace; margin-top: 5px; }
+.satellite-list::-webkit-scrollbar { width: 8px; }
+.satellite-list::-webkit-scrollbar-track { background: var(--background); }
+.satellite-list::-webkit-scrollbar-thumb { min-height: 24px; border-radius: 4px; background: #527dad; border: 1px solid var(--background); }
+.satellite-list::-webkit-scrollbar-thumb:hover { background: #80c1ff; }
 .timeline-toggle { display: flex; align-items: center; gap: 8px; flex-shrink: 0; height: 25px; border: 1px solid var(--line); border-radius: 4px; background: transparent; padding: 0 9px; font: inherit; font-size: 11px; }
 .timeline-toggle:hover:not(:disabled), .timeline-toggle[aria-expanded=true] { background: var(--hover); border-color: #3d6495; }
 .timeline-toggle > svg:last-child { transform: rotate(-90deg); }

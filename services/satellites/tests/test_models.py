@@ -49,7 +49,7 @@ class ModelTests(unittest.TestCase):
             self.assertEqual(cached.status_code,304)
             self.assertEqual(cached.content,b"")
             self.assertEqual(client.get(f"/api/v1/satellites/models/versions/{uuid4()}/model.glb").status_code,404)
-            for ids in ([25544,25544], [0], [25544,48274,20580,25994]):
+            for ids in ([25544,25544], [0]):
                 self.assertEqual(client.post("/api/v1/satellites/models/resolve",json={"norad_ids":ids}).status_code,422)
             if legacy:
                 before = client.get(f"/api/v1/satellites/tracks/{legacy['result_id']}/samples").content

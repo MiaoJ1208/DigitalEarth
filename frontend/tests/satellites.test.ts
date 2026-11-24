@@ -79,7 +79,10 @@ test('saved tracks fetch current models separately and in parallel with immutabl
   const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
   Object.defineProperty(globalThis, 'window', { configurable: true, value: globalThis });
   const legacyManifest = { ...manifest, satellites: [{ ...manifest.satellites[0], norad_id: 43013, satellite_id: 'norad-43013' }] };
-  const legacySamples = { ...payload, satellites: [{ ...payload.satellites[0], satellite_id: 'norad-43013' }] };
+  const chunks: Float64Array[] = [];
+  const receive = (_: unknown, chunk: {xyz: Float64Array}) => { chunks.push(chunk.xyz); };
+  const binaryPath = `/api/v1/satellites/tracks/${manifest.result_id}/binary/43013`;
+  const packet = Uint8Array.from([79, 82, 66, 49, 2, 0, 0, 0, 0, 0, 0, 0, 10, 0, 0, 0, 128, 246, 224, 66, 0, 0, 159, 146, 226, 66, 128, 137, 122, 0]);
   const requests: Array<{ path: string; method: string; body: unknown }> = [];
   let currentModel = { ...model, norad_id: 43013 };
   let invalidResolution = false;
@@ -89,32 +92,33 @@ test('saved tracks fetch current models separately and in parallel with immutabl
     const path = String(input);
     requests.push({ path, method: init?.method ?? 'GET', body: init?.body ? JSON.parse(String(init.body)) : undefined });
     if (path === `/api/v1/satellites/tracks/${manifest.result_id}`) return new Response(JSON.stringify(legacyManifest));
-    if (path !== manifest.samples_url && path !== '/api/v1/satellites/models/resolve') throw new Error(`Unexpected request: ${path}`);
+    if (path !== binaryPath && path !== '/api/v1/satellites/models/resolve') throw new Error(`Unexpected request: ${path}`);
     if (hold) await new Promise<void>(resolve => release.push(resolve));
-    return new Response(JSON.stringify(path === manifest.samples_url ? legacySamples : { models: invalidResolution ? [] : [currentModel] }));
+    if (path === binaryPath) return new Response(packet);
+    return new Response(JSON.stringify({ models: invalidResolution ? [] : [currentModel] }));
   };
   try {
-    const loading = loadSavedTrack(manifest.result_id, new AbortController().signal);
+    const loading = loadSavedTrack(manifest.result_id, new AbortController().signal, receive);
     await new Promise(resolve => setTimeout(resolve, 0));
     assert.equal(release.length, 2, 'Samples and current-model resolution must start without awaiting one another.');
     hold = false;
     release.forEach(resolve => resolve());
     const first = await loading;
     assert.deepEqual(first.manifest, legacyManifest);
-    assert.deepEqual(first.samples, legacySamples);
+    assert.deepEqual([...chunks[0]], [7000000,0,0,6999000,100000,0]);
     assert.equal(first.models[0].version, 1);
     currentModel = { ...currentModel, version: 2, version_id: '33333333-3333-4333-8333-333333333333',
       model_url: '/api/v1/satellites/models/versions/33333333-3333-4333-8333-333333333333/model.glb' };
-    const second = await loadSavedTrack(manifest.result_id, new AbortController().signal);
+    const second = await loadSavedTrack(manifest.result_id, new AbortController().signal, receive);
     assert.deepEqual(second.manifest, first.manifest);
-    assert.deepEqual(second.samples, first.samples);
+    assert.deepEqual(chunks[1], chunks[0]);
     assert.equal(second.models[0].version, 2);
     const resolutions = requests.filter(request => request.path.endsWith('/models/resolve'));
     assert.equal(resolutions.length, 2);
     assert.ok(resolutions.every(request => request.method === 'POST' && JSON.stringify(request.body) === '{"norad_ids":[43013]}'));
     assert.equal(requests.filter(request => request.method === 'POST').length, 2, 'History loading never resubmits propagation.');
     invalidResolution = true;
-    await assert.rejects(loadSavedTrack(manifest.result_id, new AbortController().signal), /模型配置格式异常/);
+    await assert.rejects(loadSavedTrack(manifest.result_id, new AbortController().signal, receive), /模型配置格式异常/);
   } finally {
     release.forEach(resolve => resolve());
     globalThis.fetch = originalFetch;
